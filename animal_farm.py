@@ -57,9 +57,9 @@ OPEN_MENU_KEY = "h"          # ปุ่มเปิดเมนูฟาร์�
 START_DELAY = 8              # วินาทีที่ให้คลิกกลับเข้าเกมหลังกด START
 
 # ปุ่มลัดของบอท ใช้ Ctrl+Alt+ตัวอักษร จะได้ไม่ทับปุ่มในเกม
-KEY_START = "ctrl+alt+s"
-KEY_STOP = "ctrl+alt+x"
-KEY_TEST = "ctrl+alt+t"      # ทดสอบว่าหาปุ่มเจอไหม (ไม่คลิกอะไร)
+KEY_START = "ctrl+a"
+KEY_STOP = "ctrl+s"
+KEY_TEST = "ctrl+d"      # ทดสอบว่าหาปุ่มเจอไหม (ไม่คลิกอะไร)
 
 # บอทจะค้นหาปุ่มเฉพาะ "หน้าต่างที่คุณคลิกค้างไว้ตอนครบ START_DELAY"
 # ถ้าไม่ใช่หน้าต่างเกม (ชื่อไม่มีคำเหล่านี้) บอทจะไม่คลิกอะไรเลย
@@ -680,7 +680,6 @@ if __name__ == "__main__":
 
     keyboard.add_hotkey(KEY_START, start)
     keyboard.add_hotkey(KEY_STOP, stop)
-    keyboard.add_hotkey("esc", stop)
     keyboard.add_hotkey(KEY_TEST, test)
 
     log("READY - รอกดปุ่ม")
