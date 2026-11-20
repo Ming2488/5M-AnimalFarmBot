@@ -50,7 +50,7 @@ foreach ($file in $files) {
 Write-Host ""
 Write-Host "[2/4] Installing required libraries..." -ForegroundColor Yellow
 
-py -m pip install pyautogui keyboard opencv-python
+py -m pip install --upgrade pyautogui keyboard opencv-python pillow
 
 if ($LASTEXITCODE -ne 0) {
     Write-Host "[ERROR] Library installation failed." -ForegroundColor Red
@@ -62,7 +62,7 @@ if ($LASTEXITCODE -ne 0) {
 Write-Host ""
 Write-Host "[3/4] Checking libraries..." -ForegroundColor Yellow
 
-py -c "import pyautogui, keyboard, cv2, numpy"
+py -c "import pyautogui, keyboard, cv2, numpy, PIL"
 
 if ($LASTEXITCODE -ne 0) {
     Write-Host "[ERROR] Library verification failed." -ForegroundColor Red
