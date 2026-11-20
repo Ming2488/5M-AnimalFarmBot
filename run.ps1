@@ -13,7 +13,7 @@ if (-not (Get-Command py -ErrorAction SilentlyContinue)) {
 $work = Join-Path $env:TEMP "AnimalFarmBot"
 New-Item -ItemType Directory -Force -Path $work | Out-Null
 
-$base = "https://raw.githubusercontent.com/Ming2488/FiveM-AnimalFarmBot/main"
+$base = "https://raw.githubusercontent.com/Ming2488/5M-AnimalFarmBot/main"
 
 Write-Host "Downloading bot and images..."
 
