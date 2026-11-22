@@ -37,7 +37,7 @@ BUY = str(BASE_DIR / "animal_buy_button.png")
 FEED = str(BASE_DIR / "animal_feed_button.png")
 COLLECT = str(BASE_DIR / "animal_collect_button.png")
 
-BUY_CONFIDENCE = 0.75
+BUY_CONFIDENCE = 0.85
 CONFIDENCE = 0.88
 
 CHECK_INTERVAL = 0.5
@@ -48,15 +48,17 @@ CLICK_HOLD = 0.02            # ระยะกดค้าง
 AFTER_CLICK = 0.02           # รอหลังปล่อยเมาส์
 BUY_WAIT = 0.2               # รอหลังกดซื้อแต่ละครั้ง ก่อนหาปุ่มซื้ออีกรอบ
 CONFIRM_INTERVAL = 0.02      # เช็กว่าปุ่มหายหลังคลิกทุกกี่วินาที
-FULL_SCAN_INTERVAL = 0.3     # สแกนทั้งหน้าต่างทุกกี่วินาที (ช้า ~0.3 วิ/ปุ่ม) ที่เหลือเช็กแค่จุดเดิม
+FULL_SCAN_INTERVAL = 0.2     # สแกนทั้งหน้าต่างเพื่อหาปุ่มตำแหน่งใหม่ทุกกี่วินาที (ช้า) ที่เหลือเช็กเฉพาะจุดที่เคยเจอ (เร็วมาก)
+CLICK_COOLDOWN = 0.7         # หลังคลิกปุ่มหนึ่ง ไม่คลิกจุดเดิมซ้ำภายในกี่วินาที (ไม่ต้องรอให้ปุ่มหาย)
 
-AUTO_BUY = True              # False = ไม่ซื้อให้ (คุณซื้อเอง) บอทจะรอให้อาหาร/เก็บอย่างเดียว
-IDLE_LIMIT = 45              # รอปุ่มให้อาหาร/เก็บสูงสุดกี่วินาที ถ้าไม่มีอะไรขึ้นเลยก็จบรอบ
+AUTO_BUY = True              # True = บอทกดซื้อให้ด้วย / False = ไม่ซื้อ (คุณซื้อเอง)
+MAX_BUY_CLICKS = 10          # กันบอทกดซื้อวนไม่จบ (ถ้าจับปุ่มซื้อผิดที่)
+IDLE_LIMIT = 0               # รอปุ่มให้อาหาร/เก็บสูงสุดกี่วินาทีแล้วจบรอบ (0 = รอไปเรื่อยๆ จนกว่าจะกดหยุด)
 
 OPEN_MENU_KEY = "h"          # ปุ่มเปิดเมนูฟาร์มในเกม
 START_DELAY = 8              # วินาทีที่ให้คลิกกลับเข้าเกมหลังกด START
 
-# ปุ่มลัดของบอท ใช้ Ctrl+Alt+ตัวอักษร จะได้ไม่ทับปุ่มในเกม
+# ปุ่มลัดของบอท (แก้ได้ เช่น "ctrl+alt+s")
 KEY_START = "ctrl+a"
 KEY_STOP = "ctrl+s"
 KEY_TEST = "ctrl+d"      # ทดสอบว่าหาปุ่มเจอไหม (ไม่คลิกอะไร)
@@ -267,8 +269,18 @@ def _match(image, region, screen=None):
     if region[2] < tw or region[3] < th:
         return None
 
-    if screen is None or region is not GAME_RECT:
-        screen = grab_screen(region)
+    sub = None
+
+    if screen is not None and GAME_RECT is not None:
+        gx, gy = GAME_RECT[0], GAME_RECT[1]
+        x0, y0 = region[0] - gx, region[1] - gy
+        x1, y1 = x0 + region[2], y0 + region[3]
+
+        if (x0 >= 0 and y0 >= 0
+                and x1 <= screen.shape[1] and y1 <= screen.shape[0]):
+            sub = screen[y0:y1, x0:x1]
+
+    screen = sub if sub is not None else grab_screen(region)
 
     res = cv2.matchTemplate(screen, tpl, cv2.TM_CCOEFF_NORMED)
     res = np.nan_to_num(res, nan=0.0, posinf=0.0, neginf=0.0)
@@ -438,7 +450,7 @@ def buy_animals():
 
         missing = 0
 
-        log("BUY BUTTON FOUND")
+        log(f"BUY BUTTON FOUND at ({button.left}, {button.top})")
         click_box(button)
 
         if stop_event.is_set():
@@ -446,6 +458,12 @@ def buy_animals():
 
         count += 1
         log(f"BUY CLICKED: {count}")
+
+        if count >= MAX_BUY_CLICKS:
+            log(f"กดซื้อครบ {MAX_BUY_CLICKS} ครั้งแล้ว -> หยุดซื้อ ไปขั้นให้อาหาร "
+                "(ถ้าตำแหน่งที่กดซ้ำๆ ไม่ใช่ปุ่มซื้อ แปลว่าจับผิดที่ "
+                "ให้ตั้ง AUTO_BUY = False)")
+            break
 
         # รอเกมประมวลผลก่อนค้นหาปุ่มอีกครั้ง
         if not wait(BUY_WAIT):
@@ -460,96 +478,152 @@ def buy_animals():
 
 def farm_loop():
     log("FEED/COLLECT LOOP START")
+    log("กดทันทีที่เจอปุ่ม (ซื้อ/ให้อาหาร/เก็บ) ไม่รอให้ปุ่มหาย")
 
-    feeds = 0
-    collects = 0
-    unconfirmed = 0
+    images = {"COLLECT": COLLECT, "FEED": FEED, "BUY": BUY}
+    conf = {"COLLECT": CONFIDENCE, "FEED": CONFIDENCE, "BUY": BUY_CONFIDENCE}
+
+    slots = {"COLLECT": [], "FEED": [], "BUY": []}  # ตำแหน่งปุ่มที่เคยเจอ (เช็กเร็วๆ)
+    recent = []                                     # (ชื่อ, x, y, เวลาที่คลิก)
+    counts = {"COLLECT": 0, "FEED": 0, "BUY": 0}
+    buy_capped = False
+
+    def active_order():
+        # ลำดับความสำคัญ: เก็บของ > ให้อาหาร > ซื้อ
+        names = ["COLLECT", "FEED"]
+
+        if AUTO_BUY and counts["BUY"] < MAX_BUY_CLICKS:
+            names.append("BUY")
+
+        return [(n, images[n]) for n in names]
+
+    streak = 0
+    last_click = None
 
     last_full = 0.0
     last_activity = time.time()
     last_report = 0
+    last_screen = None
+
+    def near(a, b, tol=12):
+        return abs(a[0] - b[0]) <= tol and abs(a[1] - b[1]) <= tol
+
+    def cooling(name, box, now):
+        return any(
+            n == name and near((x, y), (box.left, box.top))
+            and now - t < CLICK_COOLDOWN
+            for n, x, y, t in recent
+        )
 
     while not stop_event.is_set():
 
+        now = time.time()
+        recent[:] = [r for r in recent if now - r[3] < 5]
+
+        # แคปหน้าจอครั้งเดียวต่อรอบ ใช้ซ้ำกับทุกการค้นหา
+        screen = grab_screen(GAME_RECT)
+        last_screen = screen
+
         found = None
 
-        # 1) เช็กจุดเดิมก่อน (เร็ว) ลำดับ: เก็บของก่อน แล้วค่อยให้อาหาร
-        for name, image in (("COLLECT", COLLECT), ("FEED", FEED)):
-            box = find_fast(image, full=False)
+        # 1) เช็กจุดที่เคยเจอปุ่ม (เร็วมาก) ลำดับ: เก็บของก่อน แล้วค่อยให้อาหาร
+        for name, image in active_order():
+            for slot in slots[name]:
+                if cooling(name, slot, now):
+                    continue
 
-            if box is not None:
-                found = (name, image, box)
+                region = (slot.left - 15, slot.top - 15,
+                          slot.width + 30, slot.height + 30)
+                box = find_one(image, region, conf[name], screen)
+
+                if box is not None and not cooling(name, box, now):
+                    found = (name, box)
+                    break
+
+            if found:
                 break
 
-        # 2) ไม่เจอจุดเดิม -> สแกนทั้งหน้าต่าง (ช้ากว่า เลยทำเป็นช่วงๆ)
-        if found is None and time.time() - last_full >= FULL_SCAN_INTERVAL:
-            screen = grab_screen(GAME_RECT)
+        # 2) สแกนทั้งหน้าต่างเป็นช่วงๆ เพื่อหาปุ่มในตำแหน่งใหม่
+        if found is None and now - last_full >= FULL_SCAN_INTERVAL:
+            for name, image in active_order():
+                for box in find_all(image, conf[name], screen=screen):
+                    if not any(near((s_.left, s_.top), (box.left, box.top))
+                               for s_ in slots[name]):
+                        slots[name].append(box)
 
-            for name, image in (("COLLECT", COLLECT), ("FEED", FEED)):
-                box = find_fast(image, screen=screen)
-
-                if box is not None:
-                    found = (name, image, box)
-                    break
+                    if found is None and not cooling(name, box, now):
+                        found = (name, box)
 
             last_full = time.time()
 
         if found is None:
             idle = time.time() - last_activity
 
-            if idle >= IDLE_LIMIT:
+            if IDLE_LIMIT and idle >= IDLE_LIMIT:
                 log("ไม่มีปุ่มขึ้นมานานแล้ว -> จบรอบ")
                 break
 
-            if idle - last_report >= 10:
+            if idle - last_report >= 15:
                 last_report = int(idle)
-                log(f"WAITING FOR BUTTON... {int(idle)}/{IDLE_LIMIT}s")
+                scores = []
 
-            wait(0.05)
+                for name, image in (("FEED", FEED), ("COLLECT", COLLECT)):
+                    m = _match(image, GAME_RECT, last_screen)
+
+                    if m is not None:
+                        best = cv2.minMaxLoc(m[0])[1]
+                        scores.append(f"{name} {best:.2f}")
+
+                log(f"WAITING... {int(idle)}s  "
+                    f"คะแนนที่เห็นบนจอ: {', '.join(scores)} "
+                    f"(ต้อง >= {CONFIDENCE})")
+
+            wait(0.01)
             continue
 
-        name, image, target = found
-
-        region = (
-            target.left - 30,
-            target.top - 30,
-            target.width + 60,
-            target.height + 60
-        )
+        name, target = found
 
         log(f"{name} BUTTON FOUND")
+
+        # ถ้ากดจุดเดิมซ้ำทั้งที่ปุ่มยังอยู่ แปลว่าเกมอาจไม่รับคลิก
+        # (ปุ่มซื้อยกเว้น เพราะซื้อได้หลายตัว ปุ่มจึงอยู่ที่เดิมต่อได้)
+        if (name != "BUY" and last_click is not None
+                and last_click[0] == name
+                and near(last_click[1:3], (target.left, target.top))
+                and time.time() - last_click[3] < 4):
+            streak += 1
+        else:
+            streak = 0
+
+        if streak >= 3:
+            log("กดจุดเดิมซ้ำแล้วปุ่มไม่หาย -> เกมอาจไม่รับคลิกจากบอท "
+                "(ลองรันแบบ Administrator / ตั้งเกมเป็น Borderless)")
+            stop_event.set()
+            break
+
         click_box(target)
 
         if stop_event.is_set():
             break
 
-        if name == "COLLECT":
-            collects += 1
-            log(f"COLLECT CLICKED: {collects}")
-        else:
-            feeds += 1
-            log(f"FEED CLICKED: {feeds}")
+        t = time.time()
+        recent.append((name, target.left, target.top, t))
+        last_click = (name, target.left, target.top, t)
 
-        # คลิกแล้วปุ่มต้องหายไป ถ้าไม่หาย = เกมอาจไม่รับคลิก
-        if wait_until_missing(image, region, timeout=10):
-            unconfirmed = 0
-        else:
-            if stop_event.is_set():
-                break
+        counts[name] += 1
+        log(f"{name} CLICKED: {counts[name]}")
 
-            unconfirmed += 1
-            log(f"{name} คลิกแล้วปุ่มไม่หาย ({unconfirmed}/3)")
+        if (name == "BUY" and counts["BUY"] >= MAX_BUY_CLICKS
+                and not buy_capped):
+            buy_capped = True
+            log(f"กดซื้อครบ {MAX_BUY_CLICKS} ครั้งแล้ว -> หยุดซื้อ "
+                "(เพิ่มได้ที่ MAX_BUY_CLICKS)")
 
-            if unconfirmed >= 3:
-                log("คลิก 3 ครั้งติดแล้วปุ่มไม่หาย -> เกมอาจไม่รับคลิกจากบอท "
-                    "(ลองรันแบบ Administrator / ตั้งเกมเป็น Borderless)")
-                stop_event.set()
-                break
-
-        last_activity = time.time()
+        last_activity = t
         last_report = 0
 
-    log(f"LOOP FINISHED: FEED {feeds} / COLLECT {collects}")
+    log(f"LOOP FINISHED: BUY {counts['BUY']} / FEED {counts['FEED']} "
+        f"/ COLLECT {counts['COLLECT']}")
 
 
 # ==============================
@@ -590,16 +664,10 @@ def run_bot():
         else:
             log(f"SENDING {OPEN_MENU_KEY.upper()} TO ACTIVE WINDOW")
             press_key(OPEN_MENU_KEY)
-            log("KEY SENT - WAITING FOR FARM MENU")
+            log("KEY SENT")
 
-            if not wait(3):
-                return
-
-        if AUTO_BUY:
-            buy_animals()
-
-        if not stop_event.is_set():
-            farm_loop()
+        # ไม่ต้องรอเมนูเปิด: ลูปนี้สแกนต่อเนื่อง เจอปุ่มไหนก็กดทันที
+        farm_loop()
 
         if stop_event.is_set():
             log("BOT STOPPED")
@@ -669,7 +737,6 @@ if __name__ == "__main__":
     print("==============================")
     print(f"{KEY_START.upper()} = START")
     print(f"{KEY_STOP.upper()} = STOP")
-    print("ESC = STOP")
     print(f"{KEY_TEST.upper()} = TEST (หาปุ่มเจอไหม ไม่คลิก)")
     print("FAILSAFE = MOVE MOUSE TOP LEFT (จอหลัก)")
     print("==============================")
